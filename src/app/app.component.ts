@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 type Kind = 'income' | 'expense' | 'transfer';
@@ -42,7 +42,7 @@ function sample(): DataStore {
   return {version:1,accounts:acc,transactions:tx,budgets:[{category:'Alimente',amount:1300},{category:'Locuință',amount:1500},{category:'Transport',amount:600},{category:'Facturi',amount:500},{category:'Divertisment',amount:450},{category:'Sănătate',amount:300}],demo:true};
 }
 @Component({selector:'app-root',standalone:true,imports:[CommonModule,FormsModule],templateUrl:'./app.component.html',styleUrl:'./app.component.css'})
-export class AppComponent implements OnInit {
+export class AppComponent implements OnInit, OnDestroy {
   readonly expenses = EXPENSE_CATEGORIES; readonly incomes = INCOME_CATEGORIES;
   page: Page = 'dashboard'; data: DataStore = sample(); month = new Date(new Date().getFullYear(),new Date().getMonth(),1);
   dark = false; search = ''; kindFilter = 'all'; categoryFilter = 'all'; accountFilter = 'all';
@@ -50,6 +50,12 @@ export class AppComponent implements OnInit {
   txForm: Transaction = this.emptyTransaction(); accountForm: Account = this.emptyAccount();
   budgetCategory = EXPENSE_CATEGORIES[0].name; budgetValue: number | null = null;
   toast = ''; importError = ''; mobileNav = false;
+  // Paginarea este doar pentru afișare: toate înregistrările rămân în stocarea locală.
+  txPage = 1; txPageSize = 10;
+  accountPage = 1; accountPageSize = 9;
+  budgetPage = 1; budgetPageSize = 9;
+
+  private toastTimer: ReturnType<typeof setTimeout> | null = null;
 
   ngOnInit(): void {
     try { const raw=localStorage.getItem(KEY); if(raw) {const obj=JSON.parse(raw); if(this.isValidStore(obj)) this.data=obj; } } catch { /* demo data remains available */ }
@@ -58,13 +64,27 @@ export class AppComponent implements OnInit {
   }
   private isValidStore(o: any): o is DataStore { return !!o && o.version===1 && Array.isArray(o.accounts) && Array.isArray(o.transactions) && Array.isArray(o.budgets); }
   private persist(): void { try {localStorage.setItem(KEY,JSON.stringify(this.data));} catch {this.notify('Nu s-a putut salva în browser. Exportă un backup.');} }
-  notify(message: string): void {this.toast=message;}
-  dismissToast(): void {this.toast='';}
+  notify(message: string): void {
+    this.dismissToast(); // Resetează temporizatorul când apare alt mesaj.
+    this.toast = message;
+    this.toastTimer = setTimeout(() => {
+      this.toast = '';
+      this.toastTimer = null;
+    }, 3000);
+  }
+  dismissToast(): void {
+    if (this.toastTimer !== null) {
+      clearTimeout(this.toastTimer);
+      this.toastTimer = null;
+    }
+    this.toast = '';
+  }
+  ngOnDestroy(): void {this.dismissToast();}
   selectPage(p: Page): void {this.page=p;this.mobileNav=false;}
   setTheme(value: boolean): void {this.dark=value;this.applyTheme();try{localStorage.setItem('bugetul-meu-theme',value?'dark':'light');}catch{}}
   private applyTheme():void {document.documentElement.classList.toggle('dark',this.dark);}
   monthLabel(): string {return new Intl.DateTimeFormat('ro-RO',{month:'long',year:'numeric'}).format(this.month);}
-  moveMonth(delta: number): void {this.month=new Date(this.month.getFullYear(),this.month.getMonth()+delta,1);}
+  moveMonth(delta: number): void {this.month=new Date(this.month.getFullYear(),this.month.getMonth()+delta,1);this.txPage=1;}
   get monthKey(): string {return `${this.month.getFullYear()}-${String(this.month.getMonth()+1).padStart(2,'0')}`;}
   get currentMonthTransactions(): Transaction[] {return this.data.transactions.filter(t=>t.date.startsWith(this.monthKey));}
   get incomeTotal(): number {return this.currentMonthTransactions.filter(t=>t.kind==='income').reduce((s,t)=>s+t.amount,0);}
@@ -82,6 +102,26 @@ export class AppComponent implements OnInit {
   category(name:string):Category {return [...this.expenses,...this.incomes].find(c=>c.name===name)??{name:'Transfer',icon:'⇄',color:'#6674ed'};}
   accountName(id?:string):string {return this.data.accounts.find(a=>a.id===id)?.name??'Cont șters';}
   get filteredTransactions():Transaction[] {const query=this.search.trim().toLocaleLowerCase('ro'); return this.currentMonthTransactions.filter(t=>(this.kindFilter==='all'||t.kind===this.kindFilter)&&(this.categoryFilter==='all'||t.category===this.categoryFilter)&&(this.accountFilter==='all'||t.accountId===this.accountFilter||t.toAccountId===this.accountFilter)&&(!query||[t.note,t.category,this.accountName(t.accountId),this.accountName(t.toAccountId)].some(x=>x.toLocaleLowerCase('ro').includes(query)))).sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));}
+  get txPages(): number {return Math.max(1, Math.ceil(this.filteredTransactions.length / this.txPageSize));}
+  get safeTxPage(): number {return Math.max(1, Math.min(this.txPage, this.txPages));}
+  get pagedTransactions(): Transaction[] {return this.filteredTransactions.slice((this.safeTxPage-1)*this.txPageSize,this.safeTxPage*this.txPageSize);}
+  get txStart(): number {return this.filteredTransactions.length ? (this.safeTxPage-1)*this.txPageSize+1 : 0;}
+  get txEnd(): number {return Math.min(this.safeTxPage*this.txPageSize,this.filteredTransactions.length);}
+  setTxPage(page:number): void {this.txPage=Math.max(1,Math.min(page,this.txPages));}
+  updateTxPageSize(size:number | string): void {this.txPageSize=Number(size)||10;this.txPage=1;}
+  resetTxPage(): void {this.txPage=1;}
+  get txPageNumbers(): number[] {
+    const total=this.txPages, current=this.safeTxPage, begin=Math.max(1,Math.min(current-2,total-4));
+    return Array.from({length:Math.min(5,total-begin+1)},(_,i)=>begin+i);
+  }
+  get accountPages():number{return Math.max(1,Math.ceil(this.data.accounts.length/this.accountPageSize));}
+  get safeAccountPage():number{return Math.max(1,Math.min(this.accountPage,this.accountPages));}
+  get pagedAccounts():Account[]{return this.data.accounts.slice((this.safeAccountPage-1)*this.accountPageSize,this.safeAccountPage*this.accountPageSize);}
+  setAccountPage(page:number):void{this.accountPage=Math.max(1,Math.min(page,this.accountPages));}
+  get budgetPages():number{return Math.max(1,Math.ceil(this.data.budgets.length/this.budgetPageSize));}
+  get safeBudgetPage():number{return Math.max(1,Math.min(this.budgetPage,this.budgetPages));}
+  get pagedBudgets():Budget[]{return this.data.budgets.slice((this.safeBudgetPage-1)*this.budgetPageSize,this.safeBudgetPage*this.budgetPageSize);}
+  setBudgetPage(page:number):void{this.budgetPage=Math.max(1,Math.min(page,this.budgetPages));}
   get recentTransactions():Transaction[] {return [...this.currentMonthTransactions].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id)).slice(0,6);}
   get recentForAccounts():Transaction[] {return [...this.data.transactions].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);}
   clampPercent(value:number):number {return Math.max(0,Math.min(100,value));}
