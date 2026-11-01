@@ -1,0 +1,52 @@
+name: Publicare Bugetul Meu pe GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Preia codul
+        uses: actions/checkout@v4
+      - name: Instaleaza Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Instaleaza dependintele
+        run: npm install --no-audit --no-fund
+      - name: Compileaza Angular pentru numele repository-ului
+        shell: bash
+        run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          if [ "$REPO_NAME" = "${GITHUB_REPOSITORY_OWNER}.github.io" ]; then
+            BASE_HREF="/"
+          else
+            BASE_HREF="/$REPO_NAME/"
+          fi
+          npx ng build --configuration production --base-href "$BASE_HREF"
+          cp dist/bugetul-meu/browser/index.html dist/bugetul-meu/browser/404.html
+          touch dist/bugetul-meu/browser/.nojekyll
+      - name: Configureaza GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Incarca aplicatia compilata
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist/bugetul-meu/browser
+      - name: Publica site-ul
+        id: deployment
+        uses: actions/deploy-pages@v4
